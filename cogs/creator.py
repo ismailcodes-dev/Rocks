@@ -4,22 +4,18 @@ from discord import app_commands, ui
 from .channel_config import get_guild_settings
 import asyncio
 
-# --- DYNAMIC PERMISSION CHECK ---
+# --- DYNAMIC PERMISSION CHECK (SUPPORTS MULTIPLE ROLES) ---
 async def can_upload_check(interaction: discord.Interaction) -> bool:
-    # First, check for admin permissions
-    if interaction.user.guild_permissions.administrator:
-        return True
-        
-    # Then, fetch the configured veteran role ID for this server
     guild_settings = get_guild_settings(interaction.guild.id)
-    veteran_role_id = guild_settings.get("VETERAN_ROLE_ID")
+    # Note the plural "IDS"
+    creator_role_ids = set(guild_settings.get("CREATOR_ROLE_IDS", []))
     
-    # If no role is configured or the user doesn't have it, deny access
-    if not veteran_role_id:
+    if not creator_role_ids:
         return False
-    
-    veteran_role = discord.utils.get(interaction.user.roles, id=veteran_role_id)
-    return veteran_role is not None
+        
+    user_role_ids = {role.id for role in interaction.user.roles}
+    # Returns true if the user has at least one of the creator roles
+    return not user_role_ids.isdisjoint(creator_role_ids)
 
 # --- The Modal (Pop-up Form) for item details ---
 class UploadModal(ui.Modal, title="Upload New Shop Item"):
@@ -44,7 +40,7 @@ class UploadModal(ui.Modal, title="Upload New Shop Item"):
             return
 
         await interaction.response.send_message(
-            "✅ Details received! Now, please send a message in this channel with your **main thumbnail** (PNG/JPG). You can attach up to 3 images.",
+            "✅ Details received! Now, please send a message with your attachments in this channel to finalize the upload.",
             ephemeral=True
         )
         
@@ -90,17 +86,16 @@ class CreatorCog(commands.Cog):
         
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.CheckFailure):
-            # Give a more helpful error if the role isn't configured
             guild_settings = get_guild_settings(interaction.guild.id)
-            if not guild_settings.get("VETERAN_ROLE_ID"):
-                await interaction.response.send_message("❌ The Veteran role has not been set up on this server. An admin must set it with `/config setveteranrole`.", ephemeral=True)
+            if not guild_settings.get("CREATOR_ROLE_IDS"):
+                await interaction.response.send_message("❌ No Creator roles have been set up on this server. An admin must set one with `/config addcreatorrole`.", ephemeral=True)
             else:
-                await interaction.response.send_message("❌ Only Veteran Members or Admins can upload items to the shop.", ephemeral=True)
+                await interaction.response.send_message("❌ You do not have a required Creator Role to use this command.", ephemeral=True)
         else:
             print(f"An unhandled error occurred in CreatorCog: {error}")
 
-    @app_commands.command(name="upd", description="[Veterans] Upload a new item to the shop.")
-    @app_commands.check(can_upload_check) # Using the new permission check
+    @app_commands.command(name="upd", description="[Creators] Upload a new item to the shop.")
+    @app_commands.check(can_upload_check)
     async def upload(self, interaction: discord.Interaction):
         view = StartUploadView(self.bot)
         await interaction.response.send_message(
@@ -124,14 +119,10 @@ class CreatorCog(commands.Cog):
                 
                 try:
                     await self.bot.db.add_item_to_shop(
-                        creator_id=message.author.id,
-                        guild_id=message.guild.id,
-                        item_name=details["item_name"],
-                        application=details["application"],
-                        category=details["category"],
-                        price=details["price"],
-                        product_link=details["product_link"],
-                        screenshot_link=screenshots[0] if len(screenshots) > 0 else None,
+                        creator_id=message.author.id, guild_id=message.guild.id,
+                        item_name=details["item_name"], application=details["application"],
+                        category=details["category"], price=details["price"],
+                        product_link=details["product_link"], screenshot_link=screenshots[0] if len(screenshots) > 0 else None,
                         screenshot_link_2=screenshots[1] if len(screenshots) > 1 else None,
                         screenshot_link_3=screenshots[2] if len(screenshots) > 2 else None,
                     )
@@ -145,7 +136,8 @@ class CreatorCog(commands.Cog):
                         log_channel = self.bot.get_channel(log_channel_id)
                         if log_channel:
                             embed = discord.Embed(title="🚀 New Item Alert!", description=f"**{details['item_name']}** was just added by {message.author.mention}!", color=discord.Color.green())
-                            embed.set_image(url=screenshots[0])
+                            if screenshots:
+                                embed.set_image(url=screenshots[0])
                             await log_channel.send(embed=embed)
 
                 except Exception as e:

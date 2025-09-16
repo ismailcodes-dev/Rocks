@@ -16,75 +16,76 @@ class AdminCog(commands.Cog):
             if not interaction.response.is_done():
                 await interaction.response.send_message("An unexpected error occurred.", ephemeral=True)
 
-    # --- DYNAMIC COMMAND TO RETROACTIVELY ASSIGN VETERAN ROLE ---
-    @app_commands.command(name="syncveterans", description="[Admin] Give the Veteran role to all members at or above level 25.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def sync_veterans(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        
-        guild_settings = get_guild_settings(interaction.guild.id)
-        veteran_role_id = guild_settings.get("VETERAN_ROLE_ID")
-        upload_channel_id = guild_settings.get("UPLOAD_CHANNEL_ID")
+    @app_commands.command(name="givecoins", description="[Admin] Give coins to a user.")
+    @app_commands.check(is_owner_or_has_admin_role)
+    async def givecoins(self, interaction: discord.Interaction, user: discord.User, amount: int):
+        await interaction.response.defer()
+        if amount <= 0:
+            await interaction.followup.send("❌ Amount must be a positive number.", ephemeral=True)
+            return
+        player = await self.bot.db.get_user_data(user.id, interaction.guild.id)
+        new_balance = player['balance'] + amount
+        await self.bot.db.update_user_data(user.id, interaction.guild.id, {"balance": new_balance})
+        await interaction.followup.send(f"✅ Gave **{amount:,}** coins to {user.mention}. Their new balance is **{new_balance:,}**.")
 
-        if not veteran_role_id:
-            await interaction.followup.send(
-                "❌ The Veteran role has not been configured for this server. "
-                "Please set it first using `/config setveteranrole`.",
-                ephemeral=True
-            )
+    # --- NEW: Command to remove coins from a user ---
+    @app_commands.command(name="removecoins", description="[Admin] Remove coins from a user.")
+    @app_commands.check(is_owner_or_has_admin_role)
+    async def removecoins(self, interaction: discord.Interaction, user: discord.User, amount: int):
+        await interaction.response.defer()
+        if amount <= 0:
+            await interaction.followup.send("❌ Amount must be a positive number.", ephemeral=True)
             return
 
-        veteran_role = interaction.guild.get_role(veteran_role_id)
-        if not veteran_role:
-            await interaction.followup.send("❌ The configured Veteran role could not be found. It may have been deleted.", ephemeral=True)
+        player = await self.bot.db.get_user_data(user.id, interaction.guild.id)
+        
+        # Ensure the user has enough coins to remove
+        if player['balance'] < amount:
+            await interaction.followup.send(f"❌ Cannot remove {amount:,} coins. {user.mention} only has **{player['balance']:,}** coins.", ephemeral=True)
+            return
+            
+        new_balance = player['balance'] - amount
+        await self.bot.db.update_user_data(user.id, interaction.guild.id, {"balance": new_balance})
+        await interaction.followup.send(f"✅ Removed **{amount:,}** coins from {user.mention}. Their new balance is **{new_balance:,}**.")
+
+    @app_commands.command(name="synccreators", description="[Admin] Give the Creator role to all members at or above level 25.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def sync_creators(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        guild_settings = get_guild_settings(interaction.guild.id)
+        creator_role_id = guild_settings.get("CREATOR_ROLE_ID") # Updated key
+        upload_channel_id = guild_settings.get("UPLOAD_CHANNEL_ID")
+
+        if not creator_role_id:
+            await interaction.followup.send("❌ The Creator Role has not been configured. Please use `/config setcreatorrole` first.", ephemeral=True)
+            return
+
+        creator_role = interaction.guild.get_role(creator_role_id)
+        if not creator_role:
+            await interaction.followup.send("❌ The configured Creator Role could not be found. It may have been deleted.", ephemeral=True)
             return
 
         all_users_data = await self.bot.db.get_all_users_in_guild(interaction.guild.id)
         eligible_users = [user for user in all_users_data if user['level'] >= 25]
-        
         updated_count = 0
         
-        await interaction.followup.send(f"Found {len(eligible_users)} members at or above level 25. Starting role sync...", ephemeral=True)
-
         for user_data in eligible_users:
             member = interaction.guild.get_member(user_data['user_id'])
-            
-            if member and veteran_role not in member.roles:
+            if member and creator_role not in member.roles:
                 try:
-                    await member.add_roles(veteran_role, reason="Syncing roles for existing high-level members")
-                    
-                    try:
-                        dm_message = (
-                            f"Congratulations! You've been promoted to **{veteran_role.name}** in **{interaction.guild.name}**.\n\n"
-                            f"You can now upload your items to the store using the `/upd` command"
-                        )
-                        if upload_channel_id:
-                            dm_message += f" in the <#{upload_channel_id}> channel."
-                        else:
-                            dm_message += "."
-                        
-                        await member.send(dm_message)
-                    except discord.Forbidden:
-                        print(f"Could not DM {member.display_name} about their promotion (DMs disabled).")
-
+                    await member.add_roles(creator_role, reason="Syncing roles for existing high-level members")
                     updated_count += 1
-                    await asyncio.sleep(0.5) 
-                except discord.Forbidden:
-                    print(f"Failed to add role to {member.display_name} - Missing Permissions")
-                except Exception as e:
-                    print(f"Failed to add role to {member.display_name} due to an error: {e}")
+                    dm_message = (f"Congratulations! You've been promoted to **{creator_role.name}** in **{interaction.guild.name}**.\n\n")
+                    if upload_channel_id:
+                        dm_message += f"You can now upload your items to the store using the `/upd` command in the <#{upload_channel_id}> channel."
+                    await member.send(dm_message)
+                except (discord.Forbidden, discord.HTTPException):
+                    print(f"Could not add role or DM member {member.id} during sync.")
+        
+        await interaction.followup.send(f"✅ Sync complete. **{updated_count}** members were promoted to {creator_role.mention}.", ephemeral=True)
 
-        final_embed = discord.Embed(
-            title="✅ Veteran Role Sync Complete",
-            description=f"Successfully granted the {veteran_role.mention} role to **{updated_count}** members.",
-            color=discord.Color.green()
-        )
-        await interaction.followup.send(embed=final_embed, ephemeral=True)
-
-
-    # (Your other admin commands remain unchanged)
+    # (Your other admin commands like adminrole, removeitem, etc. are unchanged)
     adminrole_group = app_commands.Group(name="adminrole", description="Manage which roles have admin access.")
-
     @adminrole_group.command(name="add", description="[Admin] Grant a role admin command access.")
     @app_commands.checks.has_permissions(administrator=True)
     async def add_admin_role(self, interaction: discord.Interaction, role: discord.Role):
@@ -126,15 +127,6 @@ class AdminCog(commands.Cog):
         description = "Users with these roles can use admin commands:\n\n" + "\n".join(r.mention for r in roles if r)
         embed = discord.Embed(title="⚙️ Configured Admin Roles", description=description, color=discord.Color.orange())
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="givecoins", description="[Admin] Give coins to a user.")
-    @app_commands.check(is_owner_or_has_admin_role)
-    async def givecoins(self, interaction: discord.Interaction, user: discord.User, amount: int):
-        await interaction.response.defer()
-        player = await self.bot.db.get_user_data(user.id, interaction.guild.id)
-        new_balance = player['balance'] + amount
-        await self.bot.db.update_user_data(user.id, interaction.guild.id, {"balance": new_balance})
-        await interaction.followup.send(f"✅ Gave **{amount:,}** coins to {user.mention}. Their new balance is **{new_balance:,}**.")
 
     @app_commands.command(name="removeitem", description="[Admin] Remove an item from the shop.")
     @app_commands.check(is_owner_or_has_admin_role)

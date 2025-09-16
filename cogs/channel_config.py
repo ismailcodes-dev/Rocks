@@ -74,30 +74,49 @@ class ChannelConfigCog(commands.Cog):
         if not updated_channels:
             await interaction.followup.send("You didn't specify any channels to update.", ephemeral=True)
             return
-        embed = discord.Embed(
-            title=f"✅ Bot Channels Updated for {interaction.guild.name}",
-            description="\n".join(updated_channels),
-            color=discord.Color.green()
-        )
+        embed = discord.Embed(title=f"✅ Bot Channels Updated", description="\n".join(updated_channels), color=discord.Color.green())
         await interaction.followup.send(embed=embed)
 
-    # --- NEW: Command to set the veteran role ---
-    @config_group.command(name="setveteranrole", description="Set the role to be given to members at level 25.")
+    # --- MODIFIED: Renamed and updated to add roles to a list ---
+    @config_group.command(name="addcreatorrole", description="Add a role to the list of roles that can upload items.")
     @app_commands.checks.has_permissions(administrator=True)
-    async def set_veteran_role(self, interaction: discord.Interaction, role: discord.Role):
+    async def add_creator_role(self, interaction: discord.Interaction, role: discord.Role):
         all_settings = get_all_settings()
         guild_id_str = str(interaction.guild.id)
         if guild_id_str not in all_settings:
             all_settings[guild_id_str] = {}
+        
+        creator_roles = all_settings[guild_id_str].get("CREATOR_ROLE_IDS", [])
+        if role.id in creator_roles:
+            await interaction.response.send_message(f"❌ {role.mention} is already a creator role.", ephemeral=True)
+            return
             
-        all_settings[guild_id_str]["VETERAN_ROLE_ID"] = role.id
+        creator_roles.append(role.id)
+        all_settings[guild_id_str]["CREATOR_ROLE_IDS"] = creator_roles
+        save_all_settings(all_settings)
+        
+        embed = discord.Embed(title="✅ Creator Role Added", description=f"Members with the {role.mention} role can now use the `/upd` command.", color=discord.Color.green())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # --- NEW: Command to remove a creator role ---
+    @config_group.command(name="removecreatorrole", description="Remove a role from the list of roles that can upload items.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def remove_creator_role(self, interaction: discord.Interaction, role: discord.Role):
+        all_settings = get_all_settings()
+        guild_id_str = str(interaction.guild.id)
+        if guild_id_str not in all_settings:
+            all_settings[guild_id_str] = {}
+
+        creator_roles = all_settings[guild_id_str].get("CREATOR_ROLE_IDS", [])
+        if role.id not in creator_roles:
+            await interaction.response.send_message(f"❌ {role.mention} is not a creator role.", ephemeral=True)
+            return
+            
+        creator_roles.remove(role.id)
+        all_settings[guild_id_str]["CREATOR_ROLE_IDS"] = creator_roles
         save_all_settings(all_settings)
 
-        embed = discord.Embed(
-            title="✅ Veteran Role Updated",
-            description=f"Members who reach level 25 will now receive the {role.mention} role.",
-            color=discord.Color.green()
-        )
+        embed = discord.Embed(title="✅ Creator Role Removed", description=f"Members with the {role.mention} role can no longer use the `/upd` command.", color=discord.Color.red())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @config_group.command(name="view", description="View all configured bot channels and roles for this server.")
@@ -105,34 +124,36 @@ class ChannelConfigCog(commands.Cog):
     async def view_config(self, interaction: discord.Interaction):
         guild_settings = get_guild_settings(interaction.guild.id)
         if not guild_settings:
-            await interaction.response.send_message("⚠ No settings have been configured for this server yet. Use `/config setup` to begin.", ephemeral=True)
+            await interaction.response.send_message("⚠ No settings configured. Use `/config setup` and `/config addcreatorrole`.", ephemeral=True)
             return
         embed = discord.Embed(title=f"📌 Bot Configuration for {interaction.guild.name}", color=discord.Color.blurple())
         
-        # --- MODIFIED: Added veteran role to the view ---
         description = ""
-        all_keys = [
-            "SHOP_CHANNEL_ID", "PURCHASE_LOG_CHANNEL_ID", "ADMIN_LOG_CHANNEL_ID", 
-            "UPLOAD_CHANNEL_ID", "NEW_ITEM_LOG_CHANNEL_ID", "DATABASE_VIEW_CHANNEL_ID", "LEVEL_UP_CHANNEL_ID"
-        ]
-        for key in all_keys:
+        channel_keys = ["SHOP_CHANNEL_ID", "PURCHASE_LOG_CHANNEL_ID", "ADMIN_LOG_CHANNEL_ID", "UPLOAD_CHANNEL_ID", "NEW_ITEM_LOG_CHANNEL_ID", "DATABASE_VIEW_CHANNEL_ID", "LEVEL_UP_CHANNEL_ID"]
+        for key in channel_keys:
             channel_id = guild_settings.get(key)
-            channel_name = key.replace('_ID', '')
+            name = key.replace('_ID', '')
             if channel_id:
                 channel = self.bot.get_channel(channel_id)
-                description += f"**{channel_name}** → {channel.mention if channel else 'Not Found'}\n"
+                description += f"**{name}** → {channel.mention if channel else 'Not Found'}\n"
             else:
-                description += f"**{channel_name}** → *Not Set*\n"
+                description += f"**{name}** → *Not Set*\n"
 
-        veteran_role_id = guild_settings.get("VETERAN_ROLE_ID")
-        if veteran_role_id:
-            role = interaction.guild.get_role(veteran_role_id)
-            description += f"\n**VETERAN_ROLE** → {role.mention if role else 'Not Found'}"
+        # --- MODIFIED: Now lists multiple creator roles ---
+        creator_role_ids = guild_settings.get("CREATOR_ROLE_IDS", [])
+        description += "\n**CREATOR_ROLES** → "
+        if creator_role_ids:
+            role_mentions = []
+            for role_id in creator_role_ids:
+                role = interaction.guild.get_role(role_id)
+                role_mentions.append(role.mention if role else "`Not Found`")
+            description += ", ".join(role_mentions)
         else:
-            description += f"\n**VETERAN_ROLE** → *Not Set*"
+            description += "*Not Set*"
 
         embed.description = description
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ChannelConfigCog(bot))
+
