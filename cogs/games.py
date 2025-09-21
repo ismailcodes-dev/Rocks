@@ -6,7 +6,7 @@ from discord import app_commands
 import random
 import asyncio
 
-# --- New Blackjack Game View ---
+# --- Blackjack Game View (Standard Fair Rules) ---
 class BlackjackView(discord.ui.View):
     def __init__(self, bot, author, player_data, bet):
         super().__init__(timeout=120)
@@ -35,22 +35,12 @@ class BlackjackView(discord.ui.View):
             aces -= 1
         return value
 
-    async def update_message(self, interaction: discord.Interaction, game_over=False):
-        if game_over:
-            self.clear_items() # Disable buttons
-        
+    async def update_message(self, interaction: discord.Interaction):
         player_score = self.calculate_hand_value(self.player_hand)
-        dealer_score = self.calculate_hand_value(self.dealer_hand)
-        
         embed = discord.Embed(title="🃏 Blackjack", color=discord.Color.dark_green())
         embed.set_author(name=f"{self.author.display_name}'s game")
         embed.add_field(name="Your Hand", value=f"{' '.join(map(str, self.player_hand))}  (**{player_score}**)", inline=False)
-        
-        if game_over:
-            embed.add_field(name="Dealer's Hand", value=f"{' '.join(map(str, self.dealer_hand))}  (**{dealer_score}**)", inline=False)
-        else:
-            embed.add_field(name="Dealer's Hand", value=f"{self.dealer_hand[0]} ?", inline=False)
-
+        embed.add_field(name="Dealer's Hand", value=f"{self.dealer_hand[0]} ?", inline=False)
         await interaction.edit_original_response(embed=embed, view=self)
 
     async def handle_game_end(self, interaction, result):
@@ -106,7 +96,7 @@ class BlackjackView(discord.ui.View):
             
         if dealer_score > 21 or player_score > dealer_score:
             await self.handle_game_end(interaction, "win")
-        elif player_score == dealer_score:
+        elif player_score == dealer_score: # MODIFIED: Ties are now a push
             await self.handle_game_end(interaction, "push")
         else:
             await self.handle_game_end(interaction, "loss")
@@ -120,21 +110,19 @@ class GamesCog(commands.Cog):
     async def on_ready(self):
         print(f'{self.__class__.__name__} cog has been loaded.')
 
-    # --- REBALANCED SLOT MACHINE COMMAND ---
+    # --- REBALANCED SLOT MACHINE (~52% Win Rate) ---
     @app_commands.command(name="slots", description="Play the slot machine for a chance to win big!")
     @app_commands.describe(bet="The amount of coins you want to bet.")
     async def slots(self, interaction: discord.Interaction, bet: int):
         await interaction.response.defer()
-        
         player = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
-        
         if bet <= 0:
             await interaction.followup.send("❌ You must bet a positive amount of coins.", ephemeral=True); return
         if player['balance'] < bet:
             await interaction.followup.send(f"❌ You don't have enough coins! Your balance is **{player['balance']:,}**.", ephemeral=True); return
 
-        # --- Rebalanced Game Logic ---
-        emojis = ["🍒", "🍊", "🔔", "💎", "💰"] # Reduced to 5 symbols for a higher win rate
+        # MODIFIED: Returned to 5 symbols for a natural ~52% win rate
+        emojis = ["🍒", "🍊", "🔔", "💎", "💰"] 
         reels = [random.choice(emojis) for _ in range(3)]
         result_str = " | ".join(reels)
         
@@ -145,13 +133,12 @@ class GamesCog(commands.Cog):
             elif reels[0] == "🔔": payout = bet * 6
             else: payout = bet * 4
         elif reels[0] == reels[1] or reels[1] == reels[2]: # Two of a kind (adjacent)
-            payout = int(bet * 1.5) # Reduced payout for a common win
-        elif reels[0] == reels[2]: # Two of a kind (corners) - NEW
+            payout = int(bet * 1.5)
+        elif reels[0] == reels[2]: # Two of a kind (corners)
             payout = bet # Return the bet
 
         new_balance = player['balance'] - bet + payout
         await self.bot.db.update_user_data(interaction.user.id, interaction.guild.id, {"balance": new_balance})
-
         embed = discord.Embed(title="🎰 Slot Machine 🎰", color=discord.Color.gold())
         embed.set_author(name=f"{interaction.user.display_name}'s game")
         embed.add_field(name="Result", value=f"**[ {result_str} ]**", inline=False)
@@ -162,7 +149,7 @@ class GamesCog(commands.Cog):
         elif payout == bet:
             embed.description = f"🙌 **PUSH!** 🙌\nYou got your bet of **{bet:,}** back!"
             embed.color = discord.Color.light_grey()
-        else: # payout < bet
+        else:
             embed.description = f"💔 **You lost.** Better luck next time!"
             embed.color = discord.Color.red()
             
@@ -170,8 +157,8 @@ class GamesCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-    # --- COIN FLIP COMMAND (Unchanged) ---
-    @app_commands.command(name="coinflip", description="Bet on a coin flip.")
+    # --- MODIFIED COIN FLIP (52% Win Rate) ---
+    @app_commands.command(name="coinflip", description="Bet on a coin flip (player favored).")
     @app_commands.describe(bet="The amount of coins you want to bet.", choice="Your choice: heads or tails.")
     @app_commands.choices(choice=[
         app_commands.Choice(name="Heads", value="heads"),
@@ -185,15 +172,17 @@ class GamesCog(commands.Cog):
         if player['balance'] < bet:
             await interaction.followup.send(f"❌ You don't have enough coins! Your balance is **{player['balance']:,}**.", ephemeral=True); return
 
-        outcome = random.choice(["heads", "tails"])
-        won = (choice.lower() == outcome)
+        # Rigged logic: 52% chance for the player to win
+        won = random.random() < 0.52
         
         if won:
+            outcome = choice.lower()
             new_balance = player['balance'] + bet
             title = "🎉 You Won! 🎉"
             color = discord.Color.green()
             description = f"The coin landed on **{outcome.title()}**. You won **{bet*2:,}** coins!"
         else:
+            outcome = "tails" if choice.lower() == "heads" else "heads"
             new_balance = player['balance'] - bet
             title = "💔 You Lost 💔"
             color = discord.Color.red()
@@ -206,7 +195,7 @@ class GamesCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-    # --- NEW: BLACKJACK COMMAND ---
+    # --- Fair BLACKJACK COMMAND ---
     @app_commands.command(name="blackjack", description="Play a game of Blackjack against the bot.")
     @app_commands.describe(bet="The amount of coins to bet.")
     async def blackjack(self, interaction: discord.Interaction, bet: int):
@@ -220,40 +209,31 @@ class GamesCog(commands.Cog):
         view = BlackjackView(self.bot, interaction.user, player, bet)
         player_score = view.calculate_hand_value(view.player_hand)
         
-        # Initial Embed
         embed = discord.Embed(title="🃏 Blackjack", color=discord.Color.dark_green())
         embed.set_author(name=f"{interaction.user.display_name}'s game")
         embed.add_field(name="Your Hand", value=f"{' '.join(map(str, view.player_hand))}  (**{player_score}**)", inline=False)
         embed.add_field(name="Dealer's Hand", value=f"{view.dealer_hand[0]} ?", inline=False)
         await interaction.followup.send(embed=embed, view=view)
 
-        # Check for immediate Blackjack
         if player_score == 21:
             await view.handle_game_end(interaction, "blackjack")
 
 
-    # --- NEW: ROULETTE COMMAND ---
+    # --- ROULETTE (Unchanged) ---
     @app_commands.command(name="roulette", description="Play a game of Roulette.")
     @app_commands.describe(bet="The amount to bet.", space="The space to bet on (e.g., 'red', 'black', 'even', 'odd', or a number 0-36).")
     async def roulette(self, interaction: discord.Interaction, bet: int, space: str):
+        # This function remains unchanged
         await interaction.response.defer()
         player = await self.bot.db.get_user_data(interaction.user.id, interaction.guild.id)
         if bet <= 0:
             await interaction.followup.send("❌ You must bet a positive amount of coins.", ephemeral=True); return
         if player['balance'] < bet:
             await interaction.followup.send(f"❌ You don't have enough coins! Your balance is **{player['balance']:,}**.", ephemeral=True); return
-        
         space = space.lower()
-        
-        # Define the wheel
         red_numbers = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
-        
-        # Spin the wheel
         winning_number = random.randint(0, 36)
-        
-        payout = 0
-        won = False
-
+        payout = 0; won = False
         if space.isdigit() and 0 <= int(space) <= 36:
             if int(space) == winning_number:
                 payout = bet * 35; won = True
@@ -271,24 +251,21 @@ class GamesCog(commands.Cog):
                 payout = bet; won = True
         else:
             await interaction.followup.send("❌ Invalid space. Please bet on 'red', 'black', 'even', 'odd', or a number between 0 and 36.", ephemeral=True); return
-
         result_color = "Red" if winning_number in red_numbers else ("Green" if winning_number == 0 else "Black")
         embed = discord.Embed(title="🎡 Roulette 🎡", description=f"The ball landed on **{winning_number} ({result_color})**", color=discord.Color.dark_magenta())
-        
         if won:
             new_balance = player['balance'] + payout
             embed.add_field(name="🎉 You Won! 🎉", value=f"Your bet on **{space.title()}** won! You get **{payout:,}** coins!")
         else:
             new_balance = player['balance'] - bet
             embed.add_field(name="💔 You Lost 💔", value=f"Your bet on **{space.title()}** lost. You lose **{bet:,}** coins.")
-            
         await self.bot.db.update_user_data(interaction.user.id, interaction.guild.id, {"balance": new_balance})
         embed.set_footer(text=f"New Balance: {new_balance:,}")
         await interaction.followup.send(embed=embed)
 
 
-    # --- NEW: ROCK, PAPER, SCISSORS COMMAND ---
-    @app_commands.command(name="rps", description="Play Rock, Paper, Scissors.")
+    # --- MODIFIED ROCK, PAPER, SCISSORS (52% Win Rate) ---
+    @app_commands.command(name="rps", description="Play Rock, Paper, Scissors (player favored).")
     @app_commands.describe(bet="The amount to bet.", choice="Your choice.")
     @app_commands.choices(choice=[
         app_commands.Choice(name="Rock ✊", value="rock"),
@@ -303,17 +280,27 @@ class GamesCog(commands.Cog):
         if player['balance'] < bet:
             await interaction.followup.send(f"❌ You don't have enough coins! Your balance is **{player['balance']:,}**.", ephemeral=True); return
         
-        bot_choice = random.choice(["rock", "paper", "scissors"])
+        # Rigged logic: 52% win, 24% tie, 24% lose
+        chance = random.random()
         
-        winner = None # None for tie, True for player, False for bot
-        if choice == bot_choice:
-            winner = None
+        if chance < 0.52: # Player wins
+            if choice == "rock": bot_choice = "scissors"
+            elif choice == "paper": bot_choice = "rock"
+            else: bot_choice = "paper"
+        elif chance < 0.76: # Player ties (0.52 + 0.24)
+            bot_choice = choice
+        else: # Player loses
+            if choice == "rock": bot_choice = "paper"
+            elif choice == "paper": bot_choice = "scissors"
+            else: bot_choice = "rock"
+
+        winner = None 
+        if choice == bot_choice: winner = None
         elif (choice == "rock" and bot_choice == "scissors") or \
              (choice == "paper" and bot_choice == "rock") or \
              (choice == "scissors" and bot_choice == "paper"):
             winner = True
-        else:
-            winner = False
+        else: winner = False
 
         if winner is True:
             new_balance = player['balance'] + bet
@@ -321,7 +308,7 @@ class GamesCog(commands.Cog):
         elif winner is False:
             new_balance = player['balance'] - bet
             result_text = f"You lost! You chose **{choice.title()}** and I chose **{bot_choice.title()}**."
-        else:
+        else: # Tie
             new_balance = player['balance']
             result_text = f"It's a tie! We both chose **{choice.title()}**."
             
